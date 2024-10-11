@@ -68,11 +68,11 @@ const authenticateJWT = (req: any, res: any, next: any) => {
   if (!token)
     return res.status(401).json({ message: "Access token is missing" });
 
-  jwt.verify(token, jwt_secret, (err: any, user: any) => {
+  jwt.verify(token, jwt_secret, (err: any, decoded: any) => {
     if (err)
       return res.status(403).json({ message: "Invalid or expired token" });
 
-    req.user = user as IUser;
+    req.user = decoded; // Store the decoded token payload
     next();
   });
 };
@@ -81,7 +81,7 @@ app.get("/api", (req, res) => {
   res.status(200).send("Server is working");
 });
 
-app.post("/api/register", async (req, res, next) => {
+app.post("/api/register", async (req, res) => {
   try {
     const { email, password } = req.body;
 
@@ -91,13 +91,30 @@ app.post("/api/register", async (req, res, next) => {
         .json({ message: "Email and password are required" });
     }
 
+    // Hash the password before saving (uncomment bcrypt)
     // const hashedPassword = await bcrypt.hash(password, 10);
     const user = new User({ email, password });
     await user.save();
 
-    res.status(201).json({ message: "User registered successfully" });
+    // Generate JWT token
+    const token = jwt.sign({ userId: user._id }, jwt_secret, {
+      expiresIn: "1h",
+    });
+
+    // Set the token as an HTTP-only cookie
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 1 week
+    });
+
+    // Respond with success, token, and optional redirect URL
+    res.status(201).json({
+      message: "User registered successfully",
+      token,
+    });
   } catch (err) {
-    console.error("Error registering user:", err); // Add this line for detailed logging
+    console.error("Error registering user:", err);
     res.status(500).json({ message: "Error registering user" });
   }
 });
@@ -143,7 +160,8 @@ app.post("/api/login", async (req, res) => {
 
 app.get("/api/notes", authenticateJWT, async (req, res) => {
   try {
-    const notes = await Note.find();
+    const userId = (req.user as { userId: string }).userId;
+    const notes = await Note.find({ owner: userId });
     res.json(notes);
   } catch (err) {
     console.error(err);
@@ -187,12 +205,17 @@ app.post("/api/notes", authenticateJWT, async (req, res) => {
   }
 });
 
-app.get("/api/tags", async (req, res) => {
+app.get("/api/tags", authenticateJWT, async (req, res) => {
   try {
-    const tags = await Note.distinct("tags");
-    res.json(tags);
+    const userId = (req.user as { userId: string }).userId; // Extract userId from the JWT
+
+    // Fetch distinct tags for the notes owned by the user
+    const tags = await Note.distinct("tags", { owner: userId });
+
+    res.json(tags); // Return the tags as a response
   } catch (error) {
-    res.status(500).json({ message: "Error fetching tags" });
+    console.error("Error fetching tags:", error); // Log the error for debugging
+    res.status(500).json({ message: "Error fetching tags" }); // Return a 500 status for errors
   }
 });
 
